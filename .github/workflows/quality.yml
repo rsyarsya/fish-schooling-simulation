@@ -18,4 +18,4 @@ jobs:
       - name: Validate Unity source package
         run: python scripts/validate_project.py
       - name: Check whitespace
-        run: git diff --check HEAD
+        run: git show --format= --check HEAD
