@@ -1,0 +1,95 @@
+#pragma kernel Density
+#include "/Includes/Density.hlsl"
+#include "/Includes/Noise.hlsl"
+
+int seed;
+float floorBase;
+float floorAmplitude;
+float ceilingBase;
+float ceilingAmplitude;
+float canyonWidth;
+float canyonMeander;
+float edgeWallPadding;
+float surfaceRoughness;
+float floorNoiseScale;
+float wallNoiseScale;
+float detailNoiseScale;
+
+float SeedOffset(float value)
+{
+    return value + seed * 17.173;
+}
+
+float2 MainPath(float z)
+{
+    float x = sin(z * 0.035 + SeedOffset(0.1)) * canyonMeander;
+    x += sin(z * 0.081 + SeedOffset(2.4)) * canyonMeander * 0.35;
+    return float2(x, z);
+}
+
+float ChamberVoid(float2 xz, float2 center, float2 radius)
+{
+    float2 q = (xz - center) / radius;
+    return 1.0 - length(q);
+}
+
+float CorridorVoid(float3 pos)
+{
+    float2 path = MainPath(pos.z);
+    float lateral = abs(pos.x - path.x);
+    float mainCorridor = canyonWidth - lateral;
+
+    float zGateA = saturate(1.0 - abs(pos.z + 42.0) / 28.0);
+    float sideRoomA = min(zGateA * 18.0, 18.0 - abs(pos.x + 34.0));
+
+    float zGateB = saturate(1.0 - abs(pos.z - 8.0) / 34.0);
+    float sideRoomB = min(zGateB * 22.0, 22.0 - abs(pos.x - 35.0));
+
+    float startBay = ChamberVoid(pos.xz, float2(-52.0, -54.0), float2(26.0, 22.0)) * 22.0;
+    float chamberA = ChamberVoid(pos.xz, float2(-30.0, -36.0), float2(28.0, 24.0)) * 24.0;
+    float chamberB = ChamberVoid(pos.xz, float2(28.0, 12.0), float2(34.0, 30.0)) * 26.0;
+    float chamberC = ChamberVoid(pos.xz, float2(-8.0, 48.0), float2(42.0, 26.0)) * 24.0;
+
+    return max(max(max(mainCorridor, sideRoomA), max(sideRoomB, startBay)), max(max(chamberA, chamberB), chamberC));
+}
+
+float TerrainRoughness(float3 pos)
+{
+    float broad = snoise(float3(pos.x * floorNoiseScale, pos.y * floorNoiseScale * 0.35, pos.z * floorNoiseScale) + SeedOffset(0.3));
+    float wall = snoise(float3(pos.x * wallNoiseScale, pos.y * wallNoiseScale, pos.z * wallNoiseScale) + SeedOffset(3.1));
+    float detail = snoise(float3(pos.x * detailNoiseScale, pos.y * detailNoiseScale, pos.z * detailNoiseScale) + SeedOffset(7.7));
+    return broad * surfaceRoughness + wall * surfaceRoughness * 0.7 + detail * surfaceRoughness * 0.28;
+}
+
+[numthreads(numThreads,numThreads,numThreads)]
+void Density(int3 id : SV_DispatchThreadID)
+{
+    if (id.x >= numPointsPerAxis || id.y >= numPointsPerAxis || id.z >= numPointsPerAxis) {
+        return;
+    }
+
+    float3 pos = centre + id * spacing - boundsSize / 2;
+    float2 worldHalf = worldSize.xz * 0.5;
+
+    float rough = TerrainRoughness(pos + offset);
+    float floorHeight = floorBase
+        + snoise(float3(pos.x * floorNoiseScale, 0.0, pos.z * floorNoiseScale) + SeedOffset(1.2)) * floorAmplitude
+        + rough * 0.45;
+
+    float ceilingHeight = ceilingBase
+        + snoise(float3(pos.x * floorNoiseScale * 0.8, 0.0, pos.z * floorNoiseScale * 0.8) + SeedOffset(4.6)) * ceilingAmplitude
+        - rough * 0.35;
+
+    float floorDistance = pos.y - floorHeight;
+    float ceilingDistance = ceilingHeight - pos.y;
+
+    float horizontalVoid = CorridorVoid(pos);
+    horizontalVoid += rough * 0.75;
+
+    float edgeDistance = min(worldHalf.x - abs(pos.x), worldHalf.y - abs(pos.z)) - edgeWallPadding;
+
+    float density = min(min(floorDistance, ceilingDistance), min(horizontalVoid, edgeDistance));
+
+    int index = indexFromCoord(id.x, id.y, id.z);
+    points[index] = float4(pos, density);
+}
